@@ -17,6 +17,7 @@ struct Terminal<'a> {
 
     command: [u8; 64],
     command_len: usize,
+    command_cursor: usize,
 
     history: [[u8; 64]; 8],
     history_len: [usize; 8],
@@ -38,6 +39,7 @@ impl<'a> Terminal<'a> {
 
             command: [0; 64],
             command_len: 0,
+            command_cursor: 0,
 
             history: [[0; 64]; 8],
             history_len: [0; 8],
@@ -107,11 +109,10 @@ impl<'a> Terminal<'a> {
                 .copy_from_slice(&self.history[index][..len]);
 
             self.command_len = len;
+            self.command_cursor = self.command_len;
 
             // Redesenha o comando.
-            for i in 0..len {
-                self.put_char(self.command[i] as char);
-            }
+            self.redraw_command();
         }
 
         fn push_command_char(&mut self, c: char) {
@@ -123,24 +124,39 @@ impl<'a> Terminal<'a> {
                 return;
             }
 
-            self.command[self.command_len] = c as u8;
-            self.command_len += 1;
+            // Move o texto para abrir espaço no cursor.
+            for i in (self.command_cursor..self.command_len).rev() {
+                self.command[i + 1] = self.command[i];
+            }
 
-            self.put_char(c);
-        }   
+            self.command[self.command_cursor] = c as u8;
+            self.command_len += 1;
+            self.command_cursor += 1;
+
+            self.redraw_command();
+        }    
 
         fn remove_command_char(&mut self) {
-            if self.command_len == 0 {
+            if self.command_cursor == 0 {
                 return;
             }
 
+            // Remove o caractere anterior ao cursor.
+            for i in self.command_cursor..self.command_len {
+                self.command[i - 1] = self.command[i];
+            }
+
             self.command_len -= 1;
-            self.backspace();
+            self.command[self.command_len] = 0;
+            self.command_cursor -= 1;
+
+            self.redraw_command();
         }
 
         fn clear_command(&mut self) {
             self.command = [0; 64];
             self.command_len = 0;
+            self.command_cursor = 0;
         }
 
         fn execute_command(&mut self) {
@@ -257,6 +273,72 @@ impl<'a> Terminal<'a> {
                     self.buffer[offset + 1] = value;
                     self.buffer[offset + 2] = value;
                 }
+            }
+        }
+
+        fn redraw_command(&mut self) {
+            // Volta para o início da linha do comando.
+            self.cursor_x = 52;
+
+            // Apaga toda a área onde o comando poderia estar.
+            for row in 0..16 {
+                for column in 0..(64 * 10) {
+                    let px = self.cursor_x + column;
+                    let py = self.cursor_y + row;
+
+                    if px >= self.info.width || py >= self.info.height {
+                        continue;
+                    }
+
+                    let offset =
+                    py * self.info.stride * self.info.bytes_per_pixel
+                    + px * self.info.bytes_per_pixel;
+
+                    if offset + 2 >= self.buffer.len() {
+                        continue;
+                    }
+
+                    self.buffer[offset] = 0;
+                    self.buffer[offset + 1] = 0;
+                    self.buffer[offset + 2] = 0;
+                }
+            }
+
+            // Redesenha o comando inteiro.
+            let command = self.command;
+            let command_len = self.command_len;
+
+            for i in 0..command_len {
+                self.put_char(command[i] as char);
+            }
+
+            // Reposiciona o cursor lógico/visual.
+            self.cursor_x = 52;
+
+            for i in 0..self.command_cursor {
+                let Some(raster) = get_raster(
+                    self.command[i] as char,
+                    FontWeight::Regular,
+                    RasterHeight::Size16,
+                ) else {
+                    continue;
+                };
+
+                self.cursor_x += raster.width() + 2;
+            }
+        }
+
+        fn move_cursor_left(&mut self) {
+            if self.command_cursor > 0 {
+                self.command_cursor -= 1;
+                self.redraw_command();
+            }
+        }
+
+        fn move_cursor_right(&mut self) {
+            if self.command_cursor < self.command_len {
+                self.command_cursor += 1;
+                self.redraw_command();
             }
         }
 
@@ -500,7 +582,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             extended_scancode = false;
 
             match scancode {
-                // Seta para cima.
+                // ↑
                 0x48 => {
                     if terminal.history_count > 0 {
                         if terminal.history_index > 0 {
@@ -511,7 +593,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     }
                 }
 
-                // Seta para baixo.
+                // ↓
                 0x50 => {
                     if terminal.history_count > 0 {
                         if terminal.history_index < terminal.history_count {
@@ -531,6 +613,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                             terminal.clear_command();
                         }
                     }
+                }
+
+                // ←
+                0x4B => {
+                    terminal.move_cursor_left();
+                }
+
+                // →
+                0x4D => {
+                    terminal.move_cursor_right();
                 }
 
                 _ => {}
