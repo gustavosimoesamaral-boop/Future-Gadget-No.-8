@@ -18,6 +18,7 @@ struct Terminal<'a> {
     command: [u8; 64],
     command_len: usize,
     command_cursor: usize,
+    command_selected: bool,
 
     history: [[u8; 64]; 8],
     history_len: [usize; 8],
@@ -40,6 +41,7 @@ impl<'a> Terminal<'a> {
             command: [0; 64],
             command_len: 0,
             command_cursor: 0,
+            command_selected: false,
 
             history: [[0; 64]; 8],
             history_len: [0; 8],
@@ -54,6 +56,19 @@ impl<'a> Terminal<'a> {
 
         terminal
     }
+
+        fn select_all(&mut self) {
+            if self.command_len == 0 {
+                return;
+            }
+
+            self.command_selected = true;
+
+            // A seleção visual será implementada depois.
+            self.command_cursor = self.command_len;
+
+            self.redraw_command();
+        }
         
         fn save_history(&mut self) {
             if self.command_len == 0 {
@@ -92,7 +107,7 @@ impl<'a> Terminal<'a> {
             if index >= self.history_count {
                 return;
             }
-
+            
             // Apaga o comando atual da tela.
             let current_len = self.command_len;
 
@@ -110,17 +125,27 @@ impl<'a> Terminal<'a> {
 
             self.command_len = len;
             self.command_cursor = self.command_len;
+            self.command_selected = false;
+
+            self.redraw_command();
 
             // Redesenha o comando.
             self.redraw_command();
         }
 
         fn push_command_char(&mut self, c: char) {
-            if self.command_len >= self.command.len() {
+            if !c.is_ascii() {
                 return;
             }
 
-            if !c.is_ascii() {
+            if self.command_selected {
+                self.command = [0; 64];
+                self.command_len = 0;
+                self.command_cursor = 0;
+                self.command_selected = false;
+            }
+
+            if self.command_len >= self.command.len() {
                 return;
             }
 
@@ -137,19 +162,28 @@ impl<'a> Terminal<'a> {
         }    
 
         fn remove_command_char(&mut self) {
+            if self.command_selected {
+                self.clear_command();
+                self.command_selected = false;
+                self.redraw_command();
+                return;
+            }
+
             if self.command_cursor == 0 {
                 return;
             }
 
-            // Remove o caractere anterior ao cursor.
+            // Remove o caractere imediatamente na esquerda do cursor.
             for i in self.command_cursor..self.command_len {
                 self.command[i - 1] = self.command[i];
             }
 
             self.command_len -= 1;
             self.command[self.command_len] = 0;
+
             self.command_cursor -= 1;
 
+            // Redesenha a linha já com o caractere removido.
             self.redraw_command();
         }
 
@@ -246,6 +280,44 @@ impl<'a> Terminal<'a> {
             }
         }
 
+        fn blend_pixel(
+            &mut self,
+            px: usize,
+            py: usize,
+            red: u8,
+            green: u8,
+            blue: u8,
+            alpha: u8,
+        ) {
+            if px >= self.info.width || py >= self.info.height {
+                return;
+            }
+
+            let offset =
+                py * self.info.stride * self.info.bytes_per_pixel
+                    + px * self.info.bytes_per_pixel;
+
+            if offset + 2 >= self.buffer.len() {
+                return;
+            }
+
+            let old_red = self.buffer[offset] as u16;
+            let old_green = self.buffer[offset + 1] as u16;
+            let old_blue = self.buffer[offset + 2] as u16;
+
+            let alpha = alpha as u16;
+            let inverse_alpha = 255 - alpha;
+
+            self.buffer[offset] =
+                ((red as u16 * alpha + old_red * inverse_alpha) / 255) as u8;
+
+            self.buffer[offset + 1] =
+                ((green as u16 * alpha + old_green * inverse_alpha) / 255) as u8;
+
+            self.buffer[offset + 2] =
+                ((blue as u16 * alpha + old_blue * inverse_alpha) / 255) as u8;
+        }
+
         fn draw_cursor(&mut self, visible: bool) {
             let width = 8;
             let height = 16;
@@ -308,6 +380,10 @@ impl<'a> Terminal<'a> {
             let command = self.command;
             let command_len = self.command_len;
 
+            if self.command_selected {
+                self.draw_selection();
+            }
+
             for i in 0..command_len {
                 self.put_char(command[i] as char);
             }
@@ -315,6 +391,7 @@ impl<'a> Terminal<'a> {
             // Reposiciona o cursor lógico/visual.
             self.cursor_x = 52;
 
+            
             for i in 0..self.command_cursor {
                 let Some(raster) = get_raster(
                     self.command[i] as char,
@@ -328,6 +405,13 @@ impl<'a> Terminal<'a> {
             }
         }
 
+        fn cancel_command(&mut self) {
+            self.clear_command();
+            self.command_selected = false;
+
+            self.redraw_command();
+        }
+
         fn move_cursor_left(&mut self) {
             if self.command_cursor > 0 {
                 self.command_cursor -= 1;
@@ -339,6 +423,50 @@ impl<'a> Terminal<'a> {
             if self.command_cursor < self.command_len {
                 self.command_cursor += 1;
                 self.redraw_command();
+            }
+        }
+
+        fn draw_selection(&mut self) {
+            if !self.command_selected || self.command_len == 0 {
+                return;
+            }
+
+            let start_x = 52;
+            let mut end_x = start_x;
+
+            let command = self.command;
+
+            for i in 0..self.command_len {
+                let Some(raster) = get_raster(
+                    command[i] as char,
+                    FontWeight::Regular,
+                    RasterHeight::Size16,
+                ) else {
+                    continue;
+                };
+
+                end_x += raster.width() + 2;
+            }
+
+            // Azul com transparência.
+            let red = 40;
+            let green = 120;
+            let blue = 255;
+            let alpha = 90;
+
+            for row in 0..18 {
+                for px in start_x..end_x {
+                    let py = self.cursor_y + row;
+
+                    self.blend_pixel(
+                        px,
+                        py,
+                        red,
+                        green,
+                        blue,
+                        alpha,
+                    );
+                }
             }
         }
 
@@ -406,35 +534,7 @@ impl<'a> Terminal<'a> {
     }
 
     fn backspace(&mut self) {
-        if self.cursor_x <= 32 {
-            return;
-        }
-
-        self.cursor_x -= 10;
-
-        // Apaga uma pequena aera na posição anterior.
-        for row in 0..16 {
-            for column in 0..10 {
-                let px = self.cursor_x + column;
-                let py = self.cursor_y + row;
-
-                if px >= self.info.width || py >= self.info.height {
-                    continue;
-                }
-
-                let offset =
-                    py * self.info.stride * self.info.bytes_per_pixel
-                        + px * self.info.bytes_per_pixel;
-
-                if offset + 2 >= self.buffer.len() {
-                    continue;
-                }
-
-                self.buffer[offset] = 0;
-                self.buffer[offset + 1] = 0;
-                self.buffer[offset + 2] = 0;
-            }
-        }
+        self.remove_command_char();
     }
 }
 
@@ -455,47 +555,53 @@ fn read_scancode() -> Option<u8> {
 }
 
 // Converte scancodes básicos do teclado US para ASCII.
-fn scancode_to_ascii(scancode: u8) -> Option<char> {
+fn scancode_to_ascii(
+    scancode: u8,
+    shift_pressed: bool,
+    caps_lock: bool,
+) -> Option<char> {
+    let uppercase = shift_pressed ^ caps_lock;
+
     match scancode {
-        0x02 => Some('1'),
-        0x03 => Some('2'),
-        0x04 => Some('3'),
-        0x05 => Some('4'),
-        0x06 => Some('5'),
-        0x07 => Some('6'),
-        0x08 => Some('7'),
-        0x09 => Some('8'),
-        0x0A => Some('9'),
-        0x0B => Some('0'),
+        0x02 => Some(if shift_pressed { '!' } else { '1' }),
+        0x03 => Some(if shift_pressed { '@' } else { '2' }),
+        0x04 => Some(if shift_pressed { '#' } else { '3' }),
+        0x05 => Some(if shift_pressed { '$' } else { '4' }),
+        0x06 => Some(if shift_pressed { '%' } else { '5' }),
+        0x07 => Some(if shift_pressed { '^' } else { '6' }),
+        0x08 => Some(if shift_pressed { '&' } else { '7' }),
+        0x09 => Some(if shift_pressed { '*' } else { '8' }),
+        0x0A => Some(if shift_pressed { '(' } else { '9' }),
+        0x0B => Some(if shift_pressed { ')' } else { '0' }),
 
-        0x10 => Some('q'),
-        0x11 => Some('w'),
-        0x12 => Some('e'),
-        0x13 => Some('r'),
-        0x14 => Some('t'),
-        0x15 => Some('y'),
-        0x16 => Some('u'),
-        0x17 => Some('i'),
-        0x18 => Some('o'),
-        0x19 => Some('p'),
+        0x10 => Some(if uppercase { 'Q' } else { 'q' }),
+        0x11 => Some(if uppercase { 'W' } else { 'w' }),
+        0x12 => Some(if uppercase { 'E' } else { 'e' }),
+        0x13 => Some(if uppercase { 'R' } else { 'r' }),
+        0x14 => Some(if uppercase { 'T' } else { 't' }),
+        0x15 => Some(if uppercase { 'Y' } else { 'y' }),
+        0x16 => Some(if uppercase { 'U' } else { 'u' }),
+        0x17 => Some(if uppercase { 'I' } else { 'i' }),
+        0x18 => Some(if uppercase { 'O' } else { 'o' }),
+        0x19 => Some(if uppercase { 'P' } else { 'p' }),
 
-        0x1E => Some('a'),
-        0x1F => Some('s'),
-        0x20 => Some('d'),
-        0x21 => Some('f'),
-        0x22 => Some('g'),
-        0x23 => Some('h'),
-        0x24 => Some('j'),
-        0x25 => Some('k'),
-        0x26 => Some('l'),
+        0x1E => Some(if uppercase { 'A' } else { 'a' }),
+        0x1F => Some(if uppercase { 'S' } else { 's' }),
+        0x20 => Some(if uppercase { 'D' } else { 'd' }),
+        0x21 => Some(if uppercase { 'F' } else { 'f' }),
+        0x22 => Some(if uppercase { 'G' } else { 'g' }),
+        0x23 => Some(if uppercase { 'H' } else { 'h' }),
+        0x24 => Some(if uppercase { 'J' } else { 'j' }),
+        0x25 => Some(if uppercase { 'K' } else { 'k' }),
+        0x26 => Some(if uppercase { 'L' } else { 'l' }),
 
-        0x2C => Some('z'),
-        0x2D => Some('x'),
-        0x2E => Some('c'),
-        0x2F => Some('v'),
-        0x30 => Some('b'),
-        0x31 => Some('n'),
-        0x32 => Some('m'),
+        0x2C => Some(if uppercase { 'Z' } else { 'z' }),
+        0x2D => Some(if uppercase { 'X' } else { 'x' }),
+        0x2E => Some(if uppercase { 'C' } else { 'c' }),
+        0x2F => Some(if uppercase { 'V' } else { 'v' }),
+        0x30 => Some(if uppercase { 'B' } else { 'b' }),
+        0x31 => Some(if uppercase { 'N' } else { 'n' }),
+        0x32 => Some(if uppercase { 'M' } else { 'm' }),
 
         0x39 => Some(' '),
 
@@ -553,6 +659,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let mut blink_counter: u64 = 0;
     let mut cursor_visible = true;
     let mut extended_scancode = false;
+    let mut shift_pressed = false;
+    let mut caps_lock = false;
+    let mut ctrl_pressed = false;
 
     terminal.draw_cursor(true);
 
@@ -576,6 +685,83 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
         // Esconde o cursor antes de alterar o terminal.
         terminal.draw_cursor(false);
+
+        // Caps Lock.
+        if scancode == 0x3A {
+            caps_lock = !caps_lock;
+
+            cursor_visible = true;
+            terminal.draw_cursor(true);
+            continue;
+        }
+
+        // Shift esquerdo/direito pressionado.
+        if scancode == 0x2A || scancode == 0x36 {
+            shift_pressed = true;
+            cursor_visible = true;
+            terminal.draw_cursor(true);
+            continue;
+        }
+
+        // Shift esquerdo/direito solto.
+        if scancode == 0xAA || scancode == 0xB6 {
+            shift_pressed = false;
+            cursor_visible = true;
+            terminal.draw_cursor(true);
+            continue;
+        }
+
+        // Ctrl esquerdo pressionado.
+        if scancode == 0x1D {
+            ctrl_pressed = true;
+
+            cursor_visible = true;
+            terminal.draw_cursor(true);
+            continue;
+        }
+
+        // Ctrl esquerdo solto.
+        if scancode == 0x9D {
+            ctrl_pressed = false;
+
+            cursor_visible = true;
+            terminal.draw_cursor(true);
+            continue;
+        }
+
+        // Ctrl + A
+        if ctrl_pressed && scancode == 0x1E {
+            terminal.select_all();
+
+            cursor_visible = true;
+            terminal.draw_cursor(true);
+            continue;
+        }
+
+        // Ctrl + C
+        if ctrl_pressed && scancode == 0x2E {
+            terminal.cancel_command();
+
+            cursor_visible = true;
+            terminal.draw_cursor(true);
+            continue;
+        }
+
+        // Ctrl + L
+        if ctrl_pressed && scancode == 0x26 {
+            terminal.clear();
+
+            terminal.write("NOSSO_OS\n\n");
+            terminal.write("Kernel iniciado com sucesso!\n\n");
+            terminal.write("> ");
+
+            terminal.clear_command();
+            terminal.command_selected = false;
+
+            cursor_visible = true;
+            terminal.draw_cursor(true);
+            continue;
+        }
 
         // Teclas especiais do teclado.
         if extended_scancode {
@@ -603,14 +789,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         if terminal.history_index < terminal.history_count {
                             terminal.load_history(terminal.history_index);
                         } else {
-                            // Chegou além do comando mais recente.
-                            let current_len = terminal.command_len;
-
-                            for _ in 0..current_len {
-                                terminal.backspace();
-                            }
-
                             terminal.clear_command();
+                            terminal.redraw_command();
                         }
                     }
                 }
@@ -650,7 +830,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
 
         // Caractere normal.
-        else if let Some(character) = scancode_to_ascii(scancode) {
+        else if let Some(character) = 
+            scancode_to_ascii(scancode, shift_pressed, caps_lock) 
+        {
             terminal.push_command_char(character);
         }
 
