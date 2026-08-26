@@ -1,6 +1,7 @@
 use crate::reboot;
 use bootloader_api::info::FrameBufferInfo;
 use noto_sans_mono_bitmap::{get_raster, FontWeight, RasterHeight};
+use x86_64::instructions::interrupts::int3;
 
 pub struct Terminal<'a> {
     buffer: &'a mut [u8],
@@ -237,7 +238,8 @@ impl<'a> Terminal<'a> {
                 self.write("  clear  - limpa a tela\n");
                 self.write("  echo   - mostra um texto\n");
                 self.write("  reboot - reinicia o sistema\n");
-                self.write("  uptime - mostra o tempo ligado do sistema\n")
+                self.write("  uptime - mostra o tempo ligado do sistema\n");
+                self.write("  int3   - testa a IDT\n");
             }
 
             else if command == b"about" {
@@ -310,6 +312,12 @@ impl<'a> Terminal<'a> {
                 }
 
                 self.write_num(seconds);
+            }
+
+            else if command == b"int3" {
+                self.write("\n\nDisparando breakpoint...\n");
+
+                int3();
             }
 
             else {
