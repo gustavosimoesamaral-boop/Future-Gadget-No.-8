@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 bootloader_api = "0.11.17"
 noto-sans-mono-bitmap = "0.3.2"
-x86_64 = "0.15.2"
+x86_64 = { version = "0.15.2", features = ["abi_x86_interrupt"] }
+spin = "0.9.8"
