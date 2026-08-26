@@ -11,7 +11,6 @@ use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use keyboard::Keyboard;
 use terminal::Terminal;
-use timer::PitTimer;
 use x86_64::instructions::port::Port;
 
 entry_point!(kernel_main);
@@ -41,10 +40,14 @@ pub fn reboot() -> ! {
 }
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
-    let mut timer = PitTimer::new();
-
+    timer::init();
     interrupts::init();
     interrupts::enable();
+
+    let mut last_second = 0;
+    let mut cursor_visible = true;
+    let mut keyboard = Keyboard::new();
+
     let framebuffer = boot_info
         .framebuffer
         .as_mut()
@@ -55,16 +58,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     let mut terminal = Terminal::new(buffer, info);
 
-    let mut last_second = 0;
-    let mut cursor_visible = true;
-    let mut keyboard = Keyboard::new();
-
     terminal.draw_cursor(true);
 
     loop {
 
-        let current_second = interrupts::timer_ticks() / 100;
-        
+        let current_second = 
+            interrupts::timer_ticks() / timer::TIMER_FREQUENCY;
+
         if current_second != last_second {
             last_second = current_second;
 
