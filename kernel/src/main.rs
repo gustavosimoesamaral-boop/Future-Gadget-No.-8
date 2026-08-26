@@ -41,8 +41,10 @@ pub fn reboot() -> ! {
 }
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
-    interrupts::init();
+    let mut timer = PitTimer::new();
 
+    interrupts::init();
+    interrupts::enable();
     let framebuffer = boot_info
         .framebuffer
         .as_mut()
@@ -53,7 +55,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     let mut terminal = Terminal::new(buffer, info);
 
-    let mut timer = PitTimer::new();
     let mut last_second = 0;
     let mut cursor_visible = true;
     let mut keyboard = Keyboard::new();
@@ -61,10 +62,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     terminal.draw_cursor(true);
 
     loop {
-        timer.poll();
 
-        let current_second = timer.seconds();
-
+        let current_second = interrupts::timer_ticks() / 100;
+        
         if current_second != last_second {
             last_second = current_second;
 
