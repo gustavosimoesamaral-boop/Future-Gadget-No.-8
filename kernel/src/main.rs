@@ -75,7 +75,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
 
         let Some(scancode) = 
-        interrupts::keyboard_scancode() else {
+            interrupts::keyboard_scancode() else {
             continue;
         };
 

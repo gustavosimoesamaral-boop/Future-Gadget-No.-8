@@ -120,6 +120,8 @@ impl Keyboard {
             0x34 => Some(if self.shift_pressed { '>' } else { '.' }),
             0x35 => Some(if self.shift_pressed { '?' } else { '/' }),
 
+            0x2B => Some(if self.shift_pressed { '|' } else { '\\' }),
+
             0x1A => Some(if self.shift_pressed { '{' } else { '[' }),
             0x1B => Some(if self.shift_pressed { '}' } else { ']' }),
             0x27 => Some(if self.shift_pressed { ':' } else { ';' }),

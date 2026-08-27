@@ -4,7 +4,12 @@ use x86_64::structures::idt::{
     InterruptDescriptorTable,
     InterruptStackFrame,
 };
-use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{
+    AtomicU8,
+    AtomicU64,
+    AtomicUsize,
+    Ordering,
+};
 use crate::keyboard;
 
 pub const PIC_1_OFFSET: u8 = 32;
@@ -20,7 +25,13 @@ static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
 });
 
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
-static KEYBOARD_SCANCODE: AtomicU8 = AtomicU8::new(0);
+const KEYBOARD_BUFFER_SIZE: usize = 128;
+
+static KEYBOARD_BUFFER: [AtomicU8; KEYBOARD_BUFFER_SIZE] =
+    [const { AtomicU8::new(0) }; KEYBOARD_BUFFER_SIZE];
+
+static KEYBOARD_HEAD: AtomicUsize = AtomicUsize::new(0);
+static KEYBOARD_TAIL: AtomicUsize = AtomicUsize::new(0);
 
 pub fn init() {
     IDT.call_once(|| {
@@ -59,13 +70,20 @@ pub fn timer_ticks() -> u64 {
 }
 
 pub fn keyboard_scancode() -> Option<u8> {
-    let scancode = KEYBOARD_SCANCODE.swap(0, Ordering::Relaxed);
+    let tail = KEYBOARD_TAIL.load(Ordering::Relaxed);
+    let head = KEYBOARD_HEAD.load(Ordering::Acquire);
 
-    if scancode == 0 {
-        None
-    } else {
-        Some(scancode)
+    if tail == head {
+        return None;
     }
+
+    let scancode = KEYBOARD_BUFFER[tail].load(Ordering::Relaxed);
+
+    let next_tail = (tail + 1) % KEYBOARD_BUFFER_SIZE;
+
+    KEYBOARD_TAIL.store(next_tail, Ordering::Release);
+
+    Some(scancode)
 }
 
 extern "x86-interrupt" fn breakpoint_handler(
@@ -93,9 +111,25 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(
 ) {
     let scancode = keyboard::read_hardware_scancode();
 
-    KEYBOARD_SCANCODE.store(scancode, Ordering::Relaxed);
+    push_keyboard_scancode(scancode);
 
     unsafe {
         PICS.lock().notify_end_of_interrupt(KEYBOARD_INTERRUPT_ID);
     }
+}
+
+fn push_keyboard_scancode(scancode: u8) {
+    let head = KEYBOARD_HEAD.load(Ordering::Relaxed);
+    let next_head = (head + 1) % KEYBOARD_BUFFER_SIZE;
+
+    let tail = KEYBOARD_TAIL.load(Ordering::Acquire);
+
+    // Buffer cheio: descarta o novo scancode.
+    if next_head == tail {
+        return;
+    }
+
+    KEYBOARD_BUFFER[head].store(scancode, Ordering::Relaxed);
+
+    KEYBOARD_HEAD.store(next_head, Ordering::Release);
 }
