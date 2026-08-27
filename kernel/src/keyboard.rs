@@ -154,3 +154,10 @@ impl Keyboard {
         Some(scancode)
     }
 }
+pub fn read_hardware_scancode() -> u8 {
+    let mut data_port: Port<u8> = Port::new(0x60);
+
+    unsafe {
+        data_port.read()
+    }
+}

@@ -4,12 +4,14 @@ use x86_64::structures::idt::{
     InterruptDescriptorTable,
     InterruptStackFrame,
 };
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use crate::keyboard;
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
 pub const TIMER_INTERRUPT_ID: u8 = PIC_1_OFFSET;
+pub const KEYBOARD_INTERRUPT_ID: u8 = PIC_1_OFFSET + 1;
 
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 
@@ -18,6 +20,7 @@ static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
 });
 
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
+static KEYBOARD_SCANCODE: AtomicU8 = AtomicU8::new(0);
 
 pub fn init() {
     IDT.call_once(|| {
@@ -28,6 +31,9 @@ pub fn init() {
         idt[TIMER_INTERRUPT_ID]
             .set_handler_fn(timer_interrupt_handler);
 
+        idt[KEYBOARD_INTERRUPT_ID]
+            .set_handler_fn(keyboard_interrupt_handler);
+
         idt
     });
 
@@ -36,7 +42,7 @@ pub fn init() {
 
         // Libera somente IRQ0 (timer).
         // Todas as outras IRQs continuam mascaradas.
-        PICS.lock().write_masks(0b1111_1110, 0xFF);
+        PICS.lock().write_masks(0b1111_1100, 0xFF);
     }
 
     unsafe {
@@ -50,6 +56,16 @@ pub fn enable() {
 
 pub fn timer_ticks() -> u64 {
     TIMER_TICKS.load(Ordering::Relaxed)
+}
+
+pub fn keyboard_scancode() -> Option<u8> {
+    let scancode = KEYBOARD_SCANCODE.swap(0, Ordering::Relaxed);
+
+    if scancode == 0 {
+        None
+    } else {
+        Some(scancode)
+    }
 }
 
 extern "x86-interrupt" fn breakpoint_handler(
@@ -69,5 +85,17 @@ extern "x86-interrupt" fn timer_interrupt_handler(
 
     unsafe {
         PICS.lock().notify_end_of_interrupt(TIMER_INTERRUPT_ID);
+    }
+}
+
+extern "x86-interrupt" fn keyboard_interrupt_handler(
+    _stack_frame: InterruptStackFrame,
+) {
+    let scancode = keyboard::read_hardware_scancode();
+
+    KEYBOARD_SCANCODE.store(scancode, Ordering::Relaxed);
+
+    unsafe {
+        PICS.lock().notify_end_of_interrupt(KEYBOARD_INTERRUPT_ID);
     }
 }

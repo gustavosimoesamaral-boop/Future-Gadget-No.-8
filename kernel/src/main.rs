@@ -74,7 +74,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             terminal.draw_cursor(cursor_visible);
         }
 
-        let Some(scancode) = keyboard.read_scancode() else {
+        let Some(scancode) = 
+        interrupts::keyboard_scancode() else {
             continue;
         };
 
