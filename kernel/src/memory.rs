@@ -1,4 +1,5 @@
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
+use bootloader_api::BootInfo;
 use linked_list_allocator::LockedHeap;
 use x86_64::{
     PhysAddr,
@@ -147,5 +148,44 @@ unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
         }
 
         frame
+    }
+}
+
+pub struct MemoryManager {
+    mapper: OffsetPageTable<'static>,
+    frame_allocator: BootInfoFrameAllocator,
+}
+
+impl MemoryManager {
+    pub unsafe fn init(
+        memory_regions: &'static bootloader_api::info::MemoryRegions,
+        physical_memory_offset: u64,
+    ) -> Self {
+
+        let frame_allocator =
+            BootInfoFrameAllocator::init(memory_regions);
+
+        let mapper =
+            init_mapper(physical_memory_offset);
+
+        Self {
+            mapper,
+            frame_allocator,
+        }
+    }
+
+    pub fn allocate_frame(
+        &mut self,
+    ) -> Option<PhysFrame<Size4KiB>> {
+        self.frame_allocator.allocate_frame()
+    }
+
+    pub fn init_heap(
+        &mut self,
+    ) -> Result<(), MapToError<Size4KiB>> {
+        init_heap(
+            &mut self.mapper,
+            &mut self.frame_allocator,
+        )
     }
 }

@@ -59,33 +59,23 @@ pub fn reboot() -> ! {
 }
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
-    let usable_memory = memory::usable_memory_bytes(&boot_info.memory_regions);
 
     let physical_memory_offset =
-        match boot_info.physical_memory_offset.into_option() {
-            Some(offset) => offset,
-            None => panic!("Mapeamento da memoria fisica nao disponivel"),
-        };
+        boot_info
+            .physical_memory_offset
+            .into_option()
+            .expect("Mapeamento da memoria fisica nao disponivel");
 
-    let mut frame_allocator = memory::BootInfoFrameAllocator::init(&boot_info.memory_regions);
-
-    let mut mapper = unsafe {
-        memory::init_mapper(physical_memory_offset)
+    let mut memory = unsafe {
+        memory::MemoryManager::init(
+            &boot_info.memory_regions,
+            physical_memory_offset,
+        )
     };
 
-    memory::init_heap(
-        &mut mapper,
-        &mut frame_allocator,
-    )
-    .expect("Falha ao inicializar o heap");
-
-    timer::init();
-    interrupts::init();
-    interrupts::enable();
-
-    let mut last_second = 0;
-    let mut cursor_visible = true;
-    let mut keyboard = Keyboard::new();
+    memory
+        .init_heap()
+        .expect("Falha ao inicializar o heap");
 
     let framebuffer = boot_info
         .framebuffer
@@ -95,51 +85,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let info = framebuffer.info();
     let buffer = framebuffer.buffer_mut();
 
-    extern crate alloc;
 
-    use alloc::boxed::Box;
+
+    timer::init();
+    interrupts::init();
+    interrupts::enable();
+
+    let mut last_second = 0;
+    let mut cursor_visible = true;
+    let mut keyboard = Keyboard::new();
 
     let mut terminal = Terminal::new(buffer, info);
-
-    terminal.write("Memoria utilizavel detectada: ");
-    terminal.write_num(usable_memory);
-    terminal.write(" bytes\n\n");
-
-    let value = Box::new(1234u64);
-
-    terminal.write("Heap test: ");
-    terminal.write_num(*value);
-    terminal.write("\n");
-
-    let value_a = Box::new(1234u64);
-    let value_b = Box::new(5678u64);
-    let value_c = Box::new(0xDEADBEEFu64);
-
-    terminal.write("Memory test:\n");
-
-    terminal.write("  A = ");
-    terminal.write_num(*value_a);
-    terminal.write("\n");
-
-    terminal.write("  B = ");
-    terminal.write_num(*value_b);
-    terminal.write("\n");
-
-    terminal.write("  C = 0x");
-    terminal.write_hex(*value_c);
-    terminal.write("\n");
-
-    drop(value_a);
-    drop(value_b);
-    drop(value_c);
-
-    terminal.write("Heap liberado com sucesso.\n");
-
-    let reused = Box::new(9999u64);
-
-    terminal.write("Heap reutilizado: ");
-    terminal.write_num(*reused);
-    terminal.write("\n");
 
     terminal.draw_cursor(true);
 
