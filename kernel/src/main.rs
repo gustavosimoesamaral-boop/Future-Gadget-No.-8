@@ -7,6 +7,7 @@ mod keyboard;
 mod terminal;
 mod timer;
 mod memory;
+mod graphics;
 
 use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
@@ -23,6 +24,13 @@ use x86_64::{
     },
 };
 use bootloader_api::config::{BootloaderConfig, Mapping};
+use graphics::{
+    Framebuffer,
+    Color,
+    GraphicsBackend,
+    Point,
+    Rect,
+};
 
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
@@ -85,7 +93,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let info = framebuffer.info();
     let buffer = framebuffer.buffer_mut();
 
-
+    let mut graphics = Framebuffer::new(buffer, info);
 
     timer::init();
     interrupts::init();
@@ -95,7 +103,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let mut cursor_visible = true;
     let mut keyboard = Keyboard::new();
 
-    let mut terminal = Terminal::new(buffer, info);
+    let mut terminal = Terminal::new(&mut graphics);
 
     terminal.draw_cursor(true);
 

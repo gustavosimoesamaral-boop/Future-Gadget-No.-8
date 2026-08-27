@@ -1,11 +1,20 @@
+use crate::graphics::{
+    Color,
+    GraphicsBackend,
+    Point,
+    Rect,
+};
+
 use crate::reboot;
-use bootloader_api::info::FrameBufferInfo;
 use noto_sans_mono_bitmap::{get_raster, FontWeight, RasterHeight};
 use x86_64::instructions::interrupts::int3;
 
-pub struct Terminal<'a> {
-    buffer: &'a mut [u8],
-    info: FrameBufferInfo,
+pub struct Terminal<'a, G>
+where
+    G: GraphicsBackend,
+{
+    graphics: &'a mut G,
+
     cursor_x: usize,
     cursor_y: usize,
 
@@ -22,15 +31,14 @@ pub struct Terminal<'a> {
     pub history_index: usize,
 }
 
-impl<'a> Terminal<'a> {
-    pub fn new(
-        buffer: &'a mut [u8],
-        info: bootloader_api::info::FrameBufferInfo,
-    ) -> Self {
-
+impl<'a, G> Terminal<'a, G>
+where
+    G: GraphicsBackend,
+{
+    pub fn new(graphics: &'a mut G) -> Self {
         let mut terminal = Self {
-            buffer,
-            info,
+            graphics,
+
             cursor_x: 32,
             cursor_y: 32,
 
@@ -330,9 +338,7 @@ impl<'a> Terminal<'a> {
         }
 
         pub fn clear(&mut self) {
-            for byte in self.buffer.iter_mut() {
-                *byte = 0;
-            }
+            self.graphics.clear(Color::BLACK);
 
             self.cursor_x = 32;
             self.cursor_y = 32;
@@ -344,103 +350,44 @@ impl<'a> Terminal<'a> {
             }
         }
 
-        fn blend_pixel(
-            &mut self,
-            px: usize,
-            py: usize,
-            red: u8,
-            green: u8,
-            blue: u8,
-            alpha: u8,
-        ) {
-            if px >= self.info.width || py >= self.info.height {
-                return;
-            }
-
-            let offset =
-                py * self.info.stride * self.info.bytes_per_pixel
-                    + px * self.info.bytes_per_pixel;
-
-            if offset + 2 >= self.buffer.len() {
-                return;
-            }
-
-            let old_red = self.buffer[offset] as u16;
-            let old_green = self.buffer[offset + 1] as u16;
-            let old_blue = self.buffer[offset + 2] as u16;
-
-            let alpha = alpha as u16;
-            let inverse_alpha = 255 - alpha;
-
-            self.buffer[offset] =
-                ((red as u16 * alpha + old_red * inverse_alpha) / 255) as u8;
-
-            self.buffer[offset + 1] =
-                ((green as u16 * alpha + old_green * inverse_alpha) / 255) as u8;
-
-            self.buffer[offset + 2] =
-                ((blue as u16 * alpha + old_blue * inverse_alpha) / 255) as u8;
-        }
-
         pub fn draw_cursor(&mut self, visible: bool) {
             let width = 8;
             let height = 16;
 
+            let color = if visible {
+                Color::WHITE
+            } else {
+                Color::BLACK
+            };
+
             for row in 0..height {
                 for column in 0..width {
-                    let px = self.cursor_x + column;
-                    let py = self.cursor_y + row;
+                    let point = Point::new(
+                        self.cursor_x + column,
+                        self.cursor_y + row,
+                    );
 
-                    if px >= self.info.width || py >= self.info.height {
-                        continue;
-                    }
-
-                    let offset =
-                    py * self.info.stride * self.info.bytes_per_pixel
-                    + px * self.info.bytes_per_pixel;
-
-                    if offset + 2 >= self.buffer.len() {
-                        continue;
-                    }
-
-                    let value = if visible { 255 } else { 0 };
-
-                    self.buffer[offset] = value;
-                    self.buffer[offset + 1] = value;
-                    self.buffer[offset + 2] = value;
+                    self.graphics.draw_pixel(
+                        point,
+                        color,
+                    );
                 }
             }
         }
 
         pub fn redraw_command(&mut self) {
-            // Volta para o início da linha do comando.
             self.cursor_x = 52;
 
-            // Apaga toda a área onde o comando poderia estar.
-            for row in 0..16 {
-                for column in 0..(64 * 10) {
-                    let px = self.cursor_x + column;
-                    let py = self.cursor_y + row;
+            self.graphics.fill_rect(
+                Rect::new(
+                    self.cursor_x,
+                    self.cursor_y,
+                    64 * 10,
+                    16,
+                ),
+                Color::BLACK,
+            );
 
-                    if px >= self.info.width || py >= self.info.height {
-                        continue;
-                    }
-
-                    let offset =
-                    py * self.info.stride * self.info.bytes_per_pixel
-                    + px * self.info.bytes_per_pixel;
-
-                    if offset + 2 >= self.buffer.len() {
-                        continue;
-                    }
-
-                    self.buffer[offset] = 0;
-                    self.buffer[offset + 1] = 0;
-                    self.buffer[offset + 2] = 0;
-                }
-            }
-
-            // Redesenha o comando inteiro.
             let command = self.command;
             let command_len = self.command_len;
 
@@ -452,10 +399,8 @@ impl<'a> Terminal<'a> {
                 self.put_char(command[i] as char);
             }
 
-            // Reposiciona o cursor lógico/visual.
             self.cursor_x = 52;
 
-            
             for i in 0..self.command_cursor {
                 let Some(raster) = get_raster(
                     self.command[i] as char,
@@ -491,7 +436,9 @@ impl<'a> Terminal<'a> {
         }
 
         fn draw_selection(&mut self) {
-            if !self.command_selected || self.command_len == 0 {
+            if !self.command_selected
+                || self.command_len == 0
+            {
                 return;
             }
 
@@ -512,27 +459,23 @@ impl<'a> Terminal<'a> {
                 end_x += raster.width() + 2;
             }
 
-            // Azul com transparência.
-            let red = 40;
-            let green = 120;
-            let blue = 255;
+            let color = Color::rgb(40, 120, 255);
             let alpha = 90;
 
             for row in 0..18 {
                 for px in start_x..end_x {
-                    let py = self.cursor_y + row;
-
-                    self.blend_pixel(
-                        px,
-                        py,
-                        red,
-                        green,
-                        blue,
+                    self.graphics.blend_pixel(
+                        Point::new(
+                            px,
+                            self.cursor_y + row,
+                        ),
+                        color,
                         alpha,
                     );
                 }
             }
         }
+
         pub fn write_hex(&mut self, mut number: u64) {
             let mut digits = [0u8; 16];
             let mut len = 0;
@@ -561,7 +504,6 @@ impl<'a> Terminal<'a> {
         }
 
         fn put_char(&mut self, c: char) {
-
             if c == '\n' {
                 self.cursor_x = 32;
                 self.cursor_y += 20;
@@ -592,38 +534,32 @@ impl<'a> Terminal<'a> {
                         continue;
                     }
 
-                    let px = self.cursor_x + column;
-                    let py = self.cursor_y + row;
+                    let point = Point::new(
+                        self.cursor_x + column,
+                        self.cursor_y + row,
+                    );
 
-                    if px >= self.info.width || py >= self.info.height {
-                        continue;
-                    }
-
-                    let offset =
-                        py * self.info.stride * self.info.bytes_per_pixel
-                        + px * self.info.bytes_per_pixel;
-
-                    if offset + 2 >= self.buffer.len() {
-                        continue;
-                    }
-
-                    self.buffer[offset] = *intensity;
-                    self.buffer[offset + 1] = *intensity;
-                    self.buffer[offset + 2] = *intensity;
+                    self.graphics.draw_pixel(
+                        point,
+                        Color::rgb(
+                            *intensity,
+                            *intensity,
+                            *intensity,
+                        ),
+                    );
                 }
             }
 
-        self.cursor_x += raster.width() + 2;
+            self.cursor_x += raster.width() + 2;
 
-        // Quebra de linha automática.
-        if self.cursor_x + 20 >= self.info.width {
-            self.cursor_x = 32;
-            self.cursor_y += 20;
+            if self.cursor_x + 20 >= self.graphics.width() {
+                self.cursor_x = 32;
+                self.cursor_y += 20;
+            }
         }
+    
 
-    }
-
-    fn backspace(&mut self) {
-        self.remove_command_char();
-    }
-}
+        fn backspace(&mut self) {
+            self.remove_command_char();
+        }
+}    
