@@ -6,14 +6,33 @@ mod interrupts;
 mod keyboard;
 mod terminal;
 mod timer;
+mod memory;
 
 use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use keyboard::Keyboard;
 use terminal::Terminal;
 use x86_64::instructions::port::Port;
+use x86_64::{
+    VirtAddr,
+    structures::paging::{
+        Mapper,
+        Page,
+        PageTableFlags,
+        FrameAllocator,
+    },
+};
+use bootloader_api::config::{BootloaderConfig, Mapping};
 
-entry_point!(kernel_main);
+pub static BOOTLOADER_CONFIG: BootloaderConfig = {
+    let mut config = BootloaderConfig::new_default();
+
+    config.mappings.physical_memory = Some(Mapping::Dynamic);
+
+    config
+};
+
+entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 pub fn reboot() -> ! {
     let mut command_port: Port<u8> = Port::new(0x64);
@@ -40,6 +59,55 @@ pub fn reboot() -> ! {
 }
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
+    let usable_memory = memory::usable_memory_bytes(&boot_info.memory_regions);
+
+    let physical_memory_offset =
+        match boot_info.physical_memory_offset.into_option() {
+            Some(offset) => offset,
+            None => panic!("Mapeamento da memoria fisica nao disponivel"),
+        };
+
+    let mut frame_allocator = memory::BootInfoFrameAllocator::init(&boot_info.memory_regions);
+
+    let mut mapper = unsafe {
+        memory::init_mapper(physical_memory_offset)
+    };
+
+    let page = Page::containing_address(
+        VirtAddr::new(0x4444_4444_0000)
+    );
+
+    let frame = frame_allocator
+        .allocate_frame()
+        .expect("Nao foi possivel alocar um frame");
+
+    let flags =
+        PageTableFlags::PRESENT |
+        PageTableFlags::WRITABLE;
+
+    let map_result = unsafe {
+        mapper.map_to(
+            page,
+            frame,
+            flags,
+            &mut frame_allocator,
+        )
+    };
+
+    map_result
+        .expect("Falha ao mapear pagina")
+        .flush();
+    
+    let page_ptr = page.start_address().as_mut_ptr::<u64>();
+
+    unsafe {
+        page_ptr.write_volatile(0xDEAD_BEEF_DEAD_BEEF);
+    }
+
+    let value = unsafe {
+        page_ptr.read_volatile()
+    };
+
     timer::init();
     interrupts::init();
     interrupts::enable();
@@ -57,6 +125,22 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let buffer = framebuffer.buffer_mut();
 
     let mut terminal = Terminal::new(buffer, info);
+
+    terminal.write("Memoria utilizavel detectada: ");
+    terminal.write_num(usable_memory);
+    terminal.write(" bytes\n\n");
+
+    terminal.write("Pagina virtual: 0x");
+    terminal.write_hex(page.start_address().as_u64());
+    terminal.write("\n");
+
+    terminal.write("Frame fisico: 0x");
+    terminal.write_hex(frame.start_address().as_u64());
+    terminal.write("\n");
+
+    terminal.write("Valor lido: 0x");
+    terminal.write_hex(value);
+    terminal.write("\n\n");
 
     terminal.draw_cursor(true);
 

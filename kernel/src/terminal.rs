@@ -59,7 +59,7 @@ impl<'a> Terminal<'a> {
             self.uptime_seconds = seconds;
         }
 
-        fn write_num(&mut self, mut number: u64) {
+        pub fn write_num(&mut self, mut number: u64) {
             if number == 0 {
                 self.put_char('0');
                 return;
@@ -531,6 +531,32 @@ impl<'a> Terminal<'a> {
                         alpha,
                     );
                 }
+            }
+        }
+        pub fn write_hex(&mut self, mut number: u64) {
+            let mut digits = [0u8; 16];
+            let mut len = 0;
+
+            if number == 0 {
+                self.put_char('0');
+                return;
+            }
+
+            while number > 0 {
+                let digit = (number & 0xF) as u8;
+
+                digits[len] = match digit {
+                    0..=9 => b'0' + digit,
+                    _ => b'A' + (digit - 10),
+                };
+
+                number >>= 4;
+                len += 1;
+            }
+
+            while len > 0 {
+                len -= 1;
+                self.put_char(digits[len] as char);
             }
         }
 
