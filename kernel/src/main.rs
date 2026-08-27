@@ -73,40 +73,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         memory::init_mapper(physical_memory_offset)
     };
 
-    let page = Page::containing_address(
-        VirtAddr::new(0x4444_4444_0000)
-    );
-
-    let frame = frame_allocator
-        .allocate_frame()
-        .expect("Nao foi possivel alocar um frame");
-
-    let flags =
-        PageTableFlags::PRESENT |
-        PageTableFlags::WRITABLE;
-
-    let map_result = unsafe {
-        mapper.map_to(
-            page,
-            frame,
-            flags,
-            &mut frame_allocator,
-        )
-    };
-
-    map_result
-        .expect("Falha ao mapear pagina")
-        .flush();
-    
-    let page_ptr = page.start_address().as_mut_ptr::<u64>();
-
-    unsafe {
-        page_ptr.write_volatile(0xDEAD_BEEF_DEAD_BEEF);
-    }
-
-    let value = unsafe {
-        page_ptr.read_volatile()
-    };
+    memory::init_heap(
+        &mut mapper,
+        &mut frame_allocator,
+    )
+    .expect("Falha ao inicializar o heap");
 
     timer::init();
     interrupts::init();
@@ -124,23 +95,51 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let info = framebuffer.info();
     let buffer = framebuffer.buffer_mut();
 
+    extern crate alloc;
+
+    use alloc::boxed::Box;
+
     let mut terminal = Terminal::new(buffer, info);
 
     terminal.write("Memoria utilizavel detectada: ");
     terminal.write_num(usable_memory);
     terminal.write(" bytes\n\n");
 
-    terminal.write("Pagina virtual: 0x");
-    terminal.write_hex(page.start_address().as_u64());
+    let value = Box::new(1234u64);
+
+    terminal.write("Heap test: ");
+    terminal.write_num(*value);
     terminal.write("\n");
 
-    terminal.write("Frame fisico: 0x");
-    terminal.write_hex(frame.start_address().as_u64());
+    let value_a = Box::new(1234u64);
+    let value_b = Box::new(5678u64);
+    let value_c = Box::new(0xDEADBEEFu64);
+
+    terminal.write("Memory test:\n");
+
+    terminal.write("  A = ");
+    terminal.write_num(*value_a);
     terminal.write("\n");
 
-    terminal.write("Valor lido: 0x");
-    terminal.write_hex(value);
-    terminal.write("\n\n");
+    terminal.write("  B = ");
+    terminal.write_num(*value_b);
+    terminal.write("\n");
+
+    terminal.write("  C = 0x");
+    terminal.write_hex(*value_c);
+    terminal.write("\n");
+
+    drop(value_a);
+    drop(value_b);
+    drop(value_c);
+
+    terminal.write("Heap liberado com sucesso.\n");
+
+    let reused = Box::new(9999u64);
+
+    terminal.write("Heap reutilizado: ");
+    terminal.write_num(*reused);
+    terminal.write("\n");
 
     terminal.draw_cursor(true);
 
